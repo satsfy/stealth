@@ -948,10 +948,7 @@ fn detect_unnecessary_input() {
     mine(&node, 1, &da);
 
     let mut graph = TxGraph::build(alice).unwrap();
-    assert!(has_finding(
-        &mut graph,
-        VulnerabilityType::UnnecessaryInput
-    ));
+    assert!(has_finding(&mut graph, VulnerabilityType::UnnecessaryInput));
 }
 
 // ─── 17. Toxic Change Detection ────────────────────────────────────────────

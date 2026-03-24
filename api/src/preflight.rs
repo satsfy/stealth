@@ -94,9 +94,7 @@ fn validate_descriptor_shape(descriptor: &str) -> Result<(), ValidationError> {
     Ok(())
 }
 
-fn split_descriptor_checksum(
-    descriptor: &str,
-) -> Result<(&str, Option<&str>), ValidationError> {
+fn split_descriptor_checksum(descriptor: &str) -> Result<(&str, Option<&str>), ValidationError> {
     let mut parts = descriptor.split('#');
     let body = parts.next().expect("split always returns first element");
     let checksum = parts.next();
@@ -118,8 +116,7 @@ fn validate_descriptor_checksum_shape(checksum: &str) -> Result<(), ValidationEr
 }
 
 fn is_supported_descriptor_prefix(descriptor_body: &str) -> bool {
-    const SUPPORTED_PREFIXES: [&str; 6] =
-        ["wpkh(", "tr(", "pkh(", "sh(wpkh(", "wsh(", "sh(wsh("];
+    const SUPPORTED_PREFIXES: [&str; 6] = ["wpkh(", "tr(", "pkh(", "sh(wpkh(", "wsh(", "sh(wsh("];
     SUPPORTED_PREFIXES
         .iter()
         .any(|prefix| descriptor_body.starts_with(prefix))

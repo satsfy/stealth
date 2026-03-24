@@ -60,9 +60,7 @@ impl RpcConfig {
             RpcAuth::None => Ok(Client::new(&self.url)),
             auth => {
                 let core_auth = match auth {
-                    RpcAuth::UserPass { user, pass } => {
-                        Auth::UserPass(user.clone(), pass.clone())
-                    }
+                    RpcAuth::UserPass { user, pass } => Auth::UserPass(user.clone(), pass.clone()),
                     RpcAuth::CookieFile(path) => Auth::CookieFile(path.clone()),
                     RpcAuth::None => unreachable!(),
                 };
@@ -73,18 +71,12 @@ impl RpcConfig {
     }
 
     fn connect_wallet(&self, wallet_name: &str) -> Result<Client, ScanError> {
-        let wallet_url = format!(
-            "{}/wallet/{}",
-            self.url.trim_end_matches('/'),
-            wallet_name
-        );
+        let wallet_url = format!("{}/wallet/{}", self.url.trim_end_matches('/'), wallet_name);
         match &self.auth {
             RpcAuth::None => Ok(Client::new(&wallet_url)),
             auth => {
                 let core_auth = match auth {
-                    RpcAuth::UserPass { user, pass } => {
-                        Auth::UserPass(user.clone(), pass.clone())
-                    }
+                    RpcAuth::UserPass { user, pass } => Auth::UserPass(user.clone(), pass.clone()),
                     RpcAuth::CookieFile(path) => Auth::CookieFile(path.clone()),
                     RpcAuth::None => unreachable!(),
                 };
@@ -104,10 +96,7 @@ pub fn scan(config: &RpcConfig, target: ScanTarget) -> Result<Report, ScanError>
     }
 }
 
-fn scan_descriptors(
-    config: &RpcConfig,
-    descriptors: Vec<String>,
-) -> Result<Report, ScanError> {
+fn scan_descriptors(config: &RpcConfig, descriptors: Vec<String>) -> Result<Report, ScanError> {
     let base_client = config.connect()?;
 
     let wallet_name = format!(
@@ -173,18 +162,17 @@ fn scan_utxos(config: &RpcConfig, utxos: Vec<UtxoInput>) -> Result<Report, ScanE
             resolve_utxo_address(&client, &utxo.txid, utxo.vout)?
         };
 
-        let value = utxo
-            .value_sats
-            .map(|s| s as f64 / 1e8)
-            .unwrap_or(0.0);
+        let value = utxo.value_sats.map(|s| s as f64 / 1e8).unwrap_or(0.0);
 
         if !address.is_empty() {
             our_addrs.insert(address.clone());
-            addr_map.entry(address.clone()).or_insert_with(|| AddressInfo {
-                script_type: script_type_from_address(&address),
-                internal: false,
-                index: 0,
-            });
+            addr_map
+                .entry(address.clone())
+                .or_insert_with(|| AddressInfo {
+                    script_type: script_type_from_address(&address),
+                    internal: false,
+                    index: 0,
+                });
 
             let wtx = WalletTx {
                 txid: utxo.txid.clone(),
@@ -225,11 +213,7 @@ fn scan_utxos(config: &RpcConfig, utxos: Vec<UtxoInput>) -> Result<Report, ScanE
     Ok(graph.detect_all(None, None))
 }
 
-fn resolve_utxo_address(
-    client: &Client,
-    txid_str: &str,
-    vout: u32,
-) -> Result<String, ScanError> {
+fn resolve_utxo_address(client: &Client, txid_str: &str, vout: u32) -> Result<String, ScanError> {
     let txid: bitcoin::Txid = txid_str
         .parse()
         .map_err(|e| ScanError::Execution(format!("invalid txid '{txid_str}': {e}")))?;

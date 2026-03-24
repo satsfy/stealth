@@ -29,8 +29,8 @@ Primary public scanning API: `TxGraph::detect_all(...)`.
 
 ## Prerequisites
 
-- **Rust** ≥ 1.63
-- **Bitcoin Core** (`bitcoind`) ≥ 0.29.0 — must be on your `PATH`
+- **Rust** >= 1.93.1
+- **Bitcoin Core** (`bitcoind`) >= 0.29.0 — must be on your `PATH`
 
 ### Installing Bitcoin Core
 

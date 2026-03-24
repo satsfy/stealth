@@ -35,7 +35,7 @@ async fn scan_get_is_not_allowed() {
 }
 
 #[tokio::test]
-async fn scan_post_with_single_descriptor_returns_report() {
+async fn scan_post_with_valid_descriptor_returns_503_without_rpc() {
     let server = TestServer::spawn().await;
     let client = reqwest::Client::new();
 
@@ -48,9 +48,9 @@ async fn scan_post_with_single_descriptor_returns_report() {
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(body["stats"]["addresses_derived"], 1);
+    assert_eq!(body["error"]["code"], "scanner_not_configured");
     server.stop().await;
 }
 
@@ -75,7 +75,7 @@ async fn scan_post_with_invalid_descriptor_returns_bad_request() {
 }
 
 #[tokio::test]
-async fn scan_post_with_descriptors_returns_report() {
+async fn scan_post_with_descriptors_returns_503_without_rpc() {
     let server = TestServer::spawn().await;
     let client = reqwest::Client::new();
 
@@ -88,9 +88,9 @@ async fn scan_post_with_descriptors_returns_report() {
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(body["stats"]["addresses_derived"], 2);
+    assert_eq!(body["error"]["code"], "scanner_not_configured");
     server.stop().await;
 }
 

@@ -363,8 +363,8 @@ impl TxGraph {
 pub fn script_type_from_address(address: &str) -> String {
     // `assume_checked` skips network validation, allowing the function to
     // work for mainnet, testnet, signet and regtest addresses uniformly.
-    if let Ok(addr) = Address::from_str(address)
-        .map(|a: Address<NetworkUnchecked>| a.assume_checked())
+    if let Ok(addr) =
+        Address::from_str(address).map(|a: Address<NetworkUnchecked>| a.assume_checked())
     {
         let script = addr.script_pubkey();
         if script.is_p2pkh() {

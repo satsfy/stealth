@@ -341,7 +341,8 @@ impl TxGraph {
 
                 for payment in &ext_outs {
                     let pay_sats = (payment.value * 1e8).round() as u64;
-                    let pay_round = pay_sats.is_multiple_of(100_000) || pay_sats.is_multiple_of(1_000_000);
+                    let pay_round =
+                        pay_sats.is_multiple_of(100_000) || pay_sats.is_multiple_of(1_000_000);
 
                     if pay_round && !ch_round {
                         problems.push(format!(
@@ -886,7 +887,8 @@ impl TxGraph {
                 if !self.is_ours(&out.address) {
                     let sats = (out.value * 1e8).round() as u64;
                     total_payments += 1;
-                    if sats > 0 && (sats.is_multiple_of(100_000) || sats.is_multiple_of(1_000_000)) {
+                    if sats > 0 && (sats.is_multiple_of(100_000) || sats.is_multiple_of(1_000_000))
+                    {
                         uses_round_amounts += 1;
                     }
                 }
@@ -1139,7 +1141,11 @@ impl TxGraph {
             // Trace forward: does the "large" output feed into another
             // 2-output transaction? If so, count the chain length.
             let mut hops = 1u32;
-            let large_idx = if outputs[0].value >= outputs[1].value { 0 } else { 1 };
+            let large_idx = if outputs[0].value >= outputs[1].value {
+                0
+            } else {
+                1
+            };
             let mut trace_txid = txid.clone();
             let mut trace_vout = outputs[large_idx].index;
             let max_hops = 6;
@@ -1161,7 +1167,11 @@ impl TxGraph {
                     break;
                 }
                 hops += 1;
-                let large_child = if child_outs[0].value >= child_outs[1].value { 0 } else { 1 };
+                let large_child = if child_outs[0].value >= child_outs[1].value {
+                    0
+                } else {
+                    1
+                };
                 trace_txid = child_txid;
                 trace_vout = child_outs[large_child].index;
             }
@@ -1234,9 +1244,14 @@ impl TxGraph {
                 continue;
             }
 
-            let in_sats: Vec<u64> = inputs.iter().map(|i| (i.value * 1e8).round() as u64).collect();
-            let out_sats: Vec<u64> =
-                outputs.iter().map(|o| (o.value * 1e8).round() as u64).collect();
+            let in_sats: Vec<u64> = inputs
+                .iter()
+                .map(|i| (i.value * 1e8).round() as u64)
+                .collect();
+            let out_sats: Vec<u64> = outputs
+                .iter()
+                .map(|o| (o.value * 1e8).round() as u64)
+                .collect();
 
             // Count how many times each input→output pair appears in valid
             // assignments (a valid assignment maps each input to one output

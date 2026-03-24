@@ -32,11 +32,9 @@ async fn scan_post(
     let target = validate(target)?;
 
     let config = rpc_config.ok_or(ApiError::ScannerNotConfigured)?;
-    let report = tokio::task::spawn_blocking(move || {
-        stealth_core::scanner::scan(&config, target)
-    })
-    .await
-    .map_err(|e| ApiError::Internal(e.to_string()))??;
+    let report = tokio::task::spawn_blocking(move || stealth_core::scanner::scan(&config, target))
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))??;
 
     Ok(Json(report))
 }
@@ -184,9 +182,7 @@ mod tests {
                     .uri("/api/wallet/scan")
                     .method("POST")
                     .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({ "descriptor": "" }).to_string(),
-                    ))
+                    .body(Body::from(json!({ "descriptor": "" }).to_string()))
                     .unwrap(),
             )
             .await
