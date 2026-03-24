@@ -1,0 +1,30 @@
+[package]
+name = "stealth-core"
+version = "0.1.0"
+edition = "2021"
+authors = ["Renato Britto (satsfy) <0xsatsfy@gmail.com>"]
+license = "CC0-1.0"
+repository = "https://github.com/stealth-bitcoin/stealth"
+description = "Detects and reproduces Bitcoin UTXO privacy vulnerabilities"
+categories = ["cryptography::cryptocurrencies"]
+keywords = ["bitcoin", "privacy", "utxo", "chain-analysis"]
+readme = "README.md"
+rust-version = "1.93.1"
+
+[features]
+default = ["std"]
+std = ["bitcoin/std"]
+
+[dependencies]
+bitcoin = { version = "0.32.0", default-features = false, features = ["serde", "base64", "secp-recovery"] }
+corepc-client = { version = "0.10.0", features = ["client-sync"] }
+corepc-types = "0.11.0"
+serde = { version = "1.0.103", default-features = false, features = ["derive", "alloc"] }
+serde_json = "1.0.117"
+thiserror = "2.0.17"
+
+[dev-dependencies]
+corepc-node = { version = "0.10.1", features = ["29_0"] }
+
+[lints.rust]
+missing_debug_implementations = "deny"

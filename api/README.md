@@ -44,4 +44,5 @@ Accepts one mutually-exclusive source:
 
 Requests with no input source or multiple sources are rejected with `400 Bad Request`.
 
-The endpoint delegates to `stealth_vulnerabilities::scan`.
+The endpoint currently runs transport preflight validation and returns an empty
+report shape; detector execution lives in `stealth_core::TxGraph::detect_all`.

@@ -1,8 +1,8 @@
 use axum::{routing::post, Json, Router};
 use serde::Deserialize;
-use stealth_vulnerabilities::{scan, ScanReport, ScanTarget, UtxoInput};
 
 use crate::error::ApiError;
+use crate::preflight::{preflight_scan, ScanReport, ScanTarget, UtxoInput};
 
 pub fn router() -> Router {
     Router::new().route("/scan", post(scan_post))
@@ -23,7 +23,7 @@ async fn scan_post(Json(body): Json<ScanRequestBody>) -> Result<Json<ScanReport>
 }
 
 fn run_scan(target: ScanTarget) -> Result<Json<ScanReport>, ApiError> {
-    scan(target).map(Json).map_err(ApiError::from)
+    preflight_scan(target).map(Json).map_err(ApiError::from)
 }
 
 impl ScanRequestBody {

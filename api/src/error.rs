@@ -4,8 +4,9 @@ use axum::{
     Json,
 };
 use serde::Serialize;
-use stealth_vulnerabilities::ScanError;
 use thiserror::Error;
+
+use crate::preflight::ScanError;
 
 #[derive(Debug, Error)]
 pub enum ApiError {
