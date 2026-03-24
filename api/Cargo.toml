@@ -1,25 +1,26 @@
 [package]
 name = "stealth-api"
-version = "0.1.0"
-edition = "2021"
-authors = ["Renato Britto (satsfy) <0xsatsfy@gmail.com>"]
-license = "CC0-1.0"
-repository = "https://github.com/stealth-bitcoin/stealth"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
 description = "HTTP transport for Stealth wallet privacy analysis"
 categories = ["cryptography::cryptocurrencies", "web-programming::http-server"]
 keywords = ["bitcoin", "privacy", "api", "wallet"]
-rust-version = "1.93.1"
 readme = "README.md"
 
 [dependencies]
-axum = "0.8.6"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.145"
-stealth-core = { path = "../core" }
-thiserror = "2.0.17"
-tokio = { version = "1.48.0", features = ["macros", "net", "rt-multi-thread"] }
-tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt"] }
+axum = { workspace = true }
+corepc-client = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+stealth-core = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 http-body-util = "0.1.3"

@@ -40,6 +40,11 @@ pub enum VulnerabilityType {
     TaintedUtxoMerge,
     DirectTaint,
     BehavioralFingerprint,
+    DustAttack,
+    PeelChain,
+    DeterministicLink,
+    UnnecessaryInput,
+    ToxicChange,
 }
 
 impl core::fmt::Display for VulnerabilityType {
@@ -110,7 +115,7 @@ impl Report {
 /// Metadata about a derived address.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddressInfo {
-    /// The script type (e.g. "p2wpkh", "p2tr", "p2sh-p2wpkh", "p2pkh").
+    /// The script type (e.g. "p2wpkh", "p2tr", "p2sh", "p2wsh", "p2pkh").
     pub script_type: String,
     /// Whether this is a change (internal) address.
     pub internal: bool,

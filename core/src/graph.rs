@@ -1,5 +1,8 @@
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 
+use bitcoin::address::NetworkUnchecked;
+use bitcoin::Address;
 use corepc_client::client_sync::{v29::Client, Result as RpcResult};
 
 use crate::types::{AddressInfo, InputInfo, OutputInfo, WalletTx};
@@ -24,13 +27,13 @@ pub struct TxGraph {
     pub tx_addrs: HashMap<String, HashSet<String>>,
 
     /// Client reference for lazy tx fetches.
-    client: Client,
+    pub client: Client,
     /// Cached decoded transactions (txid → JSON value).
-    tx_cache: HashMap<String, serde_json::Value>,
+    pub tx_cache: HashMap<String, serde_json::Value>,
     /// Cached input addresses per txid.
-    input_cache: HashMap<String, Vec<InputInfo>>,
+    pub input_cache: HashMap<String, Vec<InputInfo>>,
     /// Cached output addresses per txid.
-    output_cache: HashMap<String, Vec<OutputInfo>>,
+    pub output_cache: HashMap<String, Vec<OutputInfo>>,
 }
 
 /// A UTXO entry from `listunspent`.
@@ -154,6 +157,34 @@ impl TxGraph {
             }
         }
 
+        // Populate `internal` and `index` from the HD key path reported
+        // by `getaddressinfo`. BIP-44/49/84/86 paths look like:
+        //   m/<purpose>'/<coin>'/<account>'/<change>/<index>
+        // where <change> == 1 means internal (change) address.
+        for addr_str in &our_addrs {
+            if let Ok(address) = addr_str
+                .parse::<bitcoin::Address<NetworkUnchecked>>()
+                .map(|a| a.assume_checked())
+            {
+                if let Ok(info) = client.get_address_info(&address) {
+                    if let Some(ref path) = info.hd_key_path {
+                        let parts: Vec<&str> = path.split('/').collect();
+                        // e.g. ["m", "84'", "1'", "0'", "1", "5"]
+                        if parts.len() >= 2 {
+                            let change_part = parts[parts.len() - 2];
+                            let index_part = parts[parts.len() - 1];
+                            let is_internal = change_part == "1";
+                            let idx = index_part.parse::<usize>().unwrap_or(0);
+                            if let Some(ai) = addr_map.get_mut(addr_str) {
+                                ai.internal = is_internal;
+                                ai.index = idx;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(TxGraph {
             addr_map,
             our_addrs,
@@ -270,11 +301,16 @@ impl TxGraph {
                     .to_string();
                 let value = vout.get("value").and_then(|v| v.as_f64()).unwrap_or(0.0);
                 let index = vout.get("n").and_then(|v| v.as_u64()).unwrap_or(0);
-                let script_type = vout
-                    .pointer("/scriptPubKey/type")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown")
-                    .to_string();
+                let script_type = if !addr.is_empty() {
+                    script_type_from_address(&addr)
+                } else {
+                    // Fallback: normalise the RPC type string.
+                    let raw = vout
+                        .pointer("/scriptPubKey/type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    normalize_rpc_script_type(raw).into()
+                };
                 addrs.push(OutputInfo {
                     address: addr,
                     value,
@@ -287,22 +323,82 @@ impl TxGraph {
         self.output_cache.insert(txid.to_string(), addrs.clone());
         addrs
     }
+
+    /// Find a wallet transaction that spends the output `txid:vout`.
+    ///
+    /// Searches across all known wallet transaction IDs. Returns the
+    /// spending txid if found.
+    pub fn find_spending_tx(&mut self, txid: &str, vout: u32) -> Option<String> {
+        let txids: Vec<String> = self.our_txids.iter().cloned().collect();
+        for candidate in &txids {
+            if candidate == txid {
+                continue;
+            }
+            let tx = self.fetch_tx(candidate)?;
+            if let Some(vins) = tx.get("vin").and_then(|v| v.as_array()) {
+                for vin in vins {
+                    let parent = vin.get("txid").and_then(|v| v.as_str()).unwrap_or("");
+                    let v = vin.get("vout").and_then(|v| v.as_u64()).unwrap_or(u64::MAX);
+                    if parent == txid && v == vout as u64 {
+                        return Some(candidate.clone());
+                    }
+                }
+            }
+        }
+        None
+    }
 }
 
-/// Infer script type from address prefix.
+/// Determine script type by actually decoding the address and inspecting
+/// the resulting script.
+///
+/// Unlike the old prefix-based heuristic this handles all cases correctly:
+///
+/// * `bc1q` / `tb1q` / `bcrt1q` with a 20-byte program → **p2wpkh**
+/// * `bc1q` / `tb1q` / `bcrt1q` with a 32-byte program → **p2wsh**
+/// * `bc1p` / `tb1p` / `bcrt1p` → **p2tr**
+/// * Base58 `1`/`m`/`n` (version 0x00/0x6f) → **p2pkh**
+/// * Base58 `3`/`2` (version 0x05/0xc4) → **p2sh** (we *cannot* know if it
+///   wraps p2wpkh, p2wsh, or bare multisig without the redeem script)
 pub fn script_type_from_address(address: &str) -> String {
-    if address.starts_with("tb1q") || address.starts_with("bc1q") || address.starts_with("bcrt1q") {
-        "p2wpkh".into()
-    } else if address.starts_with("tb1p")
-        || address.starts_with("bc1p")
-        || address.starts_with("bcrt1p")
+    // `assume_checked` skips network validation, allowing the function to
+    // work for mainnet, testnet, signet and regtest addresses uniformly.
+    if let Ok(addr) = Address::from_str(address)
+        .map(|a: Address<NetworkUnchecked>| a.assume_checked())
     {
-        "p2tr".into()
-    } else if address.starts_with('2') || address.starts_with('3') {
-        "p2sh-p2wpkh".into()
-    } else if address.starts_with('1') || address.starts_with('m') || address.starts_with('n') {
-        "p2pkh".into()
-    } else {
-        "unknown".into()
+        let script = addr.script_pubkey();
+        if script.is_p2pkh() {
+            return "p2pkh".into();
+        } else if script.is_p2sh() {
+            // Without the redeemScript (only available at spend time)
+            // we cannot distinguish p2sh-p2wpkh from p2sh-p2wsh or
+            // bare p2sh multisig.  Report as generic "p2sh".
+            return "p2sh".into();
+        } else if script.is_p2wpkh() {
+            return "p2wpkh".into();
+        } else if script.is_p2wsh() {
+            return "p2wsh".into();
+        } else if script.is_p2tr() {
+            return "p2tr".into();
+        }
+    }
+
+    "unknown".into()
+}
+
+/// Normalise the `scriptPubKey.type` string that Bitcoin Core returns in
+/// `getrawtransaction` / `decoderawtransaction` to the canonical short names
+/// used throughout stealth-core.
+fn normalize_rpc_script_type(raw: &str) -> &str {
+    match raw {
+        "witness_v0_keyhash" => "p2wpkh",
+        "witness_v0_scripthash" => "p2wsh",
+        "witness_v1_taproot" => "p2tr",
+        "pubkeyhash" => "p2pkh",
+        "scripthash" => "p2sh",
+        "pubkey" => "p2pk",
+        "multisig" => "multisig",
+        "nulldata" => "op_return",
+        other => other,
     }
 }

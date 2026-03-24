@@ -1,113 +1,57 @@
-use serde::{Deserialize, Serialize};
-use stealth_core::{Report, Stats, Summary};
+use stealth_core::scanner::ScanTarget;
 use thiserror::Error;
 
-/// Canonical input accepted by the HTTP scan preflight.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ScanTarget {
-    Descriptor(String),
-    Descriptors(Vec<String>),
-    Utxos(Vec<UtxoInput>),
-}
-
-/// Minimal UTXO shape accepted by the HTTP scan preflight.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UtxoInput {
-    pub txid: String,
-    pub vout: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub value_sats: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub address: Option<String>,
-}
-
-pub type ScanReport = Report;
-
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum ScanError {
+pub enum ValidationError {
     #[error("invalid scan input: {0}")]
     InvalidInput(String),
 }
 
-pub fn preflight_scan(target: ScanTarget) -> Result<ScanReport, ScanError> {
-    let normalized = normalize_target(target)?;
-
-    let stats = Stats {
-        transactions_analyzed: 0,
-        addresses_derived: normalized.descriptor_count,
-        utxos_current: normalized.utxo_count,
-    };
-    let findings = Vec::new();
-    let warnings = Vec::new();
-    let summary = Summary {
-        findings: findings.len(),
-        warnings: warnings.len(),
-        clean: findings.is_empty() && warnings.is_empty(),
-    };
-
-    Ok(Report {
-        stats,
-        findings,
-        warnings,
-        summary,
-    })
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NormalizedScanInput {
-    descriptor_count: usize,
-    utxo_count: usize,
-}
-
-fn normalize_target(target: ScanTarget) -> Result<NormalizedScanInput, ScanError> {
-    match target {
-        ScanTarget::Descriptor(descriptor) => {
-            validate_descriptor_shape(&descriptor)?;
-            Ok(NormalizedScanInput {
-                descriptor_count: 1,
-                utxo_count: 0,
-            })
+/// Validate and normalize a [`ScanTarget`] before scanning.
+///
+/// Returns the validated target unchanged, or an error if the input
+/// fails structural validation.
+pub fn validate(target: ScanTarget) -> Result<ScanTarget, ValidationError> {
+    match &target {
+        ScanTarget::Descriptor(d) => {
+            validate_descriptor_shape(d)?;
         }
-        ScanTarget::Descriptors(descriptors) => {
-            if descriptors.is_empty() {
-                return Err(ScanError::InvalidInput(
+        ScanTarget::Descriptors(ds) => {
+            if ds.is_empty() {
+                return Err(ValidationError::InvalidInput(
                     "descriptors cannot be empty".to_owned(),
                 ));
             }
-            for (index, descriptor) in descriptors.iter().enumerate() {
-                if let Err(ScanError::InvalidInput(message)) = validate_descriptor_shape(descriptor)
+            for (index, descriptor) in ds.iter().enumerate() {
+                if let Err(ValidationError::InvalidInput(message)) =
+                    validate_descriptor_shape(descriptor)
                 {
-                    return Err(ScanError::InvalidInput(format!(
+                    return Err(ValidationError::InvalidInput(format!(
                         "descriptors[{index}] {message}",
                     )));
                 }
             }
-            Ok(NormalizedScanInput {
-                descriptor_count: descriptors.len(),
-                utxo_count: 0,
-            })
         }
         ScanTarget::Utxos(utxos) => {
             if utxos.is_empty() {
-                return Err(ScanError::InvalidInput("utxos cannot be empty".to_owned()));
+                return Err(ValidationError::InvalidInput(
+                    "utxos cannot be empty".to_owned(),
+                ));
             }
             if utxos.iter().any(|utxo| utxo.txid.trim().is_empty()) {
-                return Err(ScanError::InvalidInput(
+                return Err(ValidationError::InvalidInput(
                     "utxos cannot contain empty txid values".to_owned(),
                 ));
             }
-            Ok(NormalizedScanInput {
-                descriptor_count: 0,
-                utxo_count: utxos.len(),
-            })
         }
     }
+    Ok(target)
 }
 
-fn validate_descriptor_shape(descriptor: &str) -> Result<(), ScanError> {
+fn validate_descriptor_shape(descriptor: &str) -> Result<(), ValidationError> {
     let trimmed = descriptor.trim();
     if trimmed.is_empty() {
-        return Err(ScanError::InvalidInput(
+        return Err(ValidationError::InvalidInput(
             "descriptor cannot be blank".to_owned(),
         ));
     }
@@ -118,22 +62,22 @@ fn validate_descriptor_shape(descriptor: &str) -> Result<(), ScanError> {
     }
 
     if body.chars().any(char::is_whitespace) {
-        return Err(ScanError::InvalidInput(
+        return Err(ValidationError::InvalidInput(
             "descriptor cannot contain whitespace".to_owned(),
         ));
     }
     if !is_supported_descriptor_prefix(body) {
-        return Err(ScanError::InvalidInput(
+        return Err(ValidationError::InvalidInput(
             "descriptor has unsupported script form".to_owned(),
         ));
     }
     if !body.ends_with(')') {
-        return Err(ScanError::InvalidInput(
+        return Err(ValidationError::InvalidInput(
             "descriptor must end with ')'".to_owned(),
         ));
     }
     if !has_balanced_parentheses(body) {
-        return Err(ScanError::InvalidInput(
+        return Err(ValidationError::InvalidInput(
             "descriptor has unbalanced parentheses".to_owned(),
         ));
     }
@@ -142,7 +86,7 @@ fn validate_descriptor_shape(descriptor: &str) -> Result<(), ScanError> {
         .map(|(_, inner)| inner.trim_end_matches(')').trim().is_empty())
         .unwrap_or(true)
     {
-        return Err(ScanError::InvalidInput(
+        return Err(ValidationError::InvalidInput(
             "descriptor payload cannot be empty".to_owned(),
         ));
     }
@@ -150,21 +94,23 @@ fn validate_descriptor_shape(descriptor: &str) -> Result<(), ScanError> {
     Ok(())
 }
 
-fn split_descriptor_checksum(descriptor: &str) -> Result<(&str, Option<&str>), ScanError> {
+fn split_descriptor_checksum(
+    descriptor: &str,
+) -> Result<(&str, Option<&str>), ValidationError> {
     let mut parts = descriptor.split('#');
     let body = parts.next().expect("split always returns first element");
     let checksum = parts.next();
     if parts.next().is_some() {
-        return Err(ScanError::InvalidInput(
+        return Err(ValidationError::InvalidInput(
             "descriptor contains multiple checksum separators ('#')".to_owned(),
         ));
     }
     Ok((body, checksum))
 }
 
-fn validate_descriptor_checksum_shape(checksum: &str) -> Result<(), ScanError> {
+fn validate_descriptor_checksum_shape(checksum: &str) -> Result<(), ValidationError> {
     if checksum.len() != 8 || !checksum.chars().all(|char| char.is_ascii_alphanumeric()) {
-        return Err(ScanError::InvalidInput(
+        return Err(ValidationError::InvalidInput(
             "descriptor checksum must be 8 alphanumeric characters (shape only)".to_owned(),
         ));
     }
@@ -172,7 +118,8 @@ fn validate_descriptor_checksum_shape(checksum: &str) -> Result<(), ScanError> {
 }
 
 fn is_supported_descriptor_prefix(descriptor_body: &str) -> bool {
-    const SUPPORTED_PREFIXES: [&str; 6] = ["wpkh(", "tr(", "pkh(", "sh(wpkh(", "wsh(", "sh(wsh("];
+    const SUPPORTED_PREFIXES: [&str; 6] =
+        ["wpkh(", "tr(", "pkh(", "sh(wpkh(", "wsh(", "sh(wsh("];
     SUPPORTED_PREFIXES
         .iter()
         .any(|prefix| descriptor_body.starts_with(prefix))

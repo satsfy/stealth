@@ -5,7 +5,7 @@
 //!
 //! The library connects to a running bitcoind using the
 //! [`corepc_client`] crate, fetches the wallet's transaction history and
-//! current UTXO set, and runs **12 independent vulnerability detectors**
+//! current UTXO set, and runs **17 independent vulnerability detectors**
 //! through [`TxGraph::detect_all`].
 //!
 //! Primary public scanning API: [`TxGraph::detect_all`].
@@ -29,9 +29,15 @@
 //! | 10 | Exchange-origin batch withdrawal | MEDIUM |
 //! | 11 | Tainted UTXO merge | HIGH |
 //! | 12 | Behavioural fingerprinting | MEDIUM |
+//! | 13 | Dust attack detection | CRITICAL |
+//! | 14 | Peel chain detection | HIGH – CRITICAL |
+//! | 15 | Deterministic input→output links | HIGH |
+//! | 16 | Unnecessary input (excess CIOH exposure) | MEDIUM |
+//! | 17 | Toxic change consolidation | HIGH |
 
 mod detect;
 mod graph;
+pub mod scanner;
 mod types;
 
 pub use graph::TxGraph;

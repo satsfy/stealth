@@ -1,10 +1,16 @@
-use axum::{routing::post, Json, Router};
+use std::sync::Arc;
+
+use axum::{extract::State, routing::post, Json, Router};
 use serde::Deserialize;
+use stealth_core::scanner::{RpcConfig, ScanTarget, UtxoInput};
+use stealth_core::Report;
 
 use crate::error::ApiError;
-use crate::preflight::{preflight_scan, ScanReport, ScanTarget, UtxoInput};
+use crate::preflight::validate;
 
-pub fn router() -> Router {
+type AppState = Option<Arc<RpcConfig>>;
+
+pub fn router() -> Router<AppState> {
     Router::new().route("/scan", post(scan_post))
 }
 
@@ -18,12 +24,21 @@ struct ScanRequestBody {
     utxos: Option<Vec<UtxoInput>>,
 }
 
-async fn scan_post(Json(body): Json<ScanRequestBody>) -> Result<Json<ScanReport>, ApiError> {
-    run_scan(body.into_scan_target()?)
-}
+async fn scan_post(
+    State(rpc_config): State<AppState>,
+    Json(body): Json<ScanRequestBody>,
+) -> Result<Json<Report>, ApiError> {
+    let target = body.into_scan_target()?;
+    let target = validate(target)?;
 
-fn run_scan(target: ScanTarget) -> Result<Json<ScanReport>, ApiError> {
-    preflight_scan(target).map(Json).map_err(ApiError::from)
+    let config = rpc_config.ok_or(ApiError::ScannerNotConfigured)?;
+    let report = tokio::task::spawn_blocking(move || {
+        stealth_core::scanner::scan(&config, target)
+    })
+    .await
+    .map_err(|e| ApiError::Internal(e.to_string()))??;
+
+    Ok(Json(report))
 }
 
 impl ScanRequestBody {
@@ -92,87 +107,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn post_scan_with_descriptor_list_returns_report() {
-        let response = app()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/wallet/scan")
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({
-                            "descriptors": [
-                                "wpkh(xpub.../0/*)",
-                                "wpkh(xpub.../1/*)"
-                            ]
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = read_json(response).await;
-        assert_eq!(body["stats"]["addresses_derived"], 2);
-    }
-
-    #[tokio::test]
-    async fn post_scan_with_utxos_returns_report() {
-        let response = app()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/wallet/scan")
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({
-                            "utxos": [
-                                {
-                                    "txid": "9f8adf8adf8adf8adf8adf8adf8adf8adf8adf8adf8adf8adf8adf8adf8adf8a",
-                                    "vout": 1,
-                                    "value_sats": 25000
-                                }
-                            ]
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = read_json(response).await;
-        assert_eq!(body["stats"]["utxos_current"], 1);
-    }
-
-    #[tokio::test]
-    async fn post_scan_with_single_descriptor_returns_report() {
-        let response = app()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/wallet/scan")
-                    .method("POST")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({
-                            "descriptor": "wpkh(xpub.../0/*)"
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = read_json(response).await;
-        assert_eq!(body["stats"]["addresses_derived"], 1);
-    }
-
-    #[tokio::test]
     async fn post_scan_requires_one_input_source() {
         let response = app()
             .oneshot(
@@ -219,6 +153,48 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = read_json(response).await;
         assert_eq!(body["error"]["code"], "bad_request");
+    }
+
+    #[tokio::test]
+    async fn post_scan_returns_503_without_rpc_config() {
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/wallet/scan")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "descriptor": "wpkh(xpub.../0/*)" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = read_json(response).await;
+        assert_eq!(body["error"]["code"], "scanner_not_configured");
+    }
+
+    #[tokio::test]
+    async fn post_scan_rejects_invalid_descriptor() {
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/wallet/scan")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "descriptor": "" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = read_json(response).await;
+        assert_eq!(body["error"]["code"], "invalid_scan_input");
     }
 
     async fn read_json(response: axum::response::Response) -> Value {
