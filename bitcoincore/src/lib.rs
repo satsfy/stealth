@@ -8,8 +8,8 @@ use reqwest::blocking::Client;
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use stealth_core::error::AnalysisError;
-use stealth_core::gateway::{
+use stealth_domain::error::AnalysisError;
+use stealth_domain::gateway::{
     BlockchainGateway, DecodedTransaction, DescriptorType, ResolvedDescriptor, TxInputRef,
     TxOutput, Utxo, WalletHistory, WalletTxCategory, WalletTxEntry,
 };
@@ -92,13 +92,8 @@ impl BitcoinCoreConfig {
             if !candidate.exists() {
                 continue;
             }
-            let contents = fs::read_to_string(&candidate)
-                .map_err(|error| AnalysisError::EnvironmentUnavailable(error.to_string()))?;
-            let mut parts = contents.trim().splitn(2, ':');
-            let user = parts.next().unwrap_or_default().to_string();
-            let password = parts.next().unwrap_or_default().to_string();
-            if !user.is_empty() && !password.is_empty() {
-                return Ok((user, password));
+            if let Ok(creds) = read_cookie_file(&candidate) {
+                return Ok(creds);
             }
         }
 
@@ -106,6 +101,40 @@ impl BitcoinCoreConfig {
             "could not locate a readable Bitcoin Core cookie file".into(),
         ))
     }
+}
+
+/// Read a Bitcoin Core `.cookie` file, returning `(user, password)`.
+///
+/// The cookie format is a single line of `__cookie__:hex_password`.
+pub fn read_cookie_file(path: &Path) -> Result<(String, String), AnalysisError> {
+    let contents = fs::read_to_string(path).map_err(|e| {
+        AnalysisError::EnvironmentUnavailable(format!(
+            "cannot read cookie file {}: {e}",
+            path.display()
+        ))
+    })?;
+    let mut parts = contents.trim().splitn(2, ':');
+    let user = parts
+        .next()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            AnalysisError::EnvironmentUnavailable(format!(
+                "invalid cookie file {}",
+                path.display()
+            ))
+        })?
+        .to_string();
+    let pass = parts
+        .next()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            AnalysisError::EnvironmentUnavailable(format!(
+                "invalid cookie file {}",
+                path.display()
+            ))
+        })?
+        .to_string();
+    Ok((user, pass))
 }
 
 pub struct BitcoinCoreRpc {

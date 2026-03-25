@@ -5,11 +5,8 @@
 //! every scan request through the shared gateway abstraction, ensuring a
 //! single execution path for HTTP, CLI, and library consumers.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
-
-use crate::config::AnalysisConfig;
 use crate::descriptor::normalize_descriptors;
 use crate::error::AnalysisError;
 use crate::gateway::{
@@ -19,6 +16,8 @@ use crate::gateway::{
 use crate::graph::TxGraph;
 use crate::types::Report;
 
+pub use stealth_domain::scan::{EngineSettings, ScanTarget, UtxoInput};
+
 /// Adapter so that a `&dyn BlockchainGateway` can be passed where a
 /// `&dyn DescriptorNormalizer` is expected (trait-object upcasting is
 /// not available for blanket impls).
@@ -27,48 +26,6 @@ struct GatewayNormalizer<'a>(&'a dyn BlockchainGateway);
 impl crate::descriptor::DescriptorNormalizer for GatewayNormalizer<'_> {
     fn normalize(&self, descriptor: &str) -> Result<String, AnalysisError> {
         self.0.normalize_descriptor(descriptor)
-    }
-}
-
-// ── Input types ─────────────────────────────────────────────────────────────
-
-/// What to scan.
-#[derive(Debug, Clone)]
-pub enum ScanTarget {
-    Descriptor(String),
-    Descriptors(Vec<String>),
-    Utxos(Vec<UtxoInput>),
-}
-
-/// A raw UTXO to analyse.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UtxoInput {
-    pub txid: String,
-    pub vout: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub value_sats: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub address: Option<String>,
-}
-
-// ── Engine settings ─────────────────────────────────────────────────────────
-
-/// Top-level settings for [`AnalysisEngine`], combining detector config
-/// with optional known-wallet hooks used by taint and exchange detectors.
-#[derive(Debug, Clone)]
-pub struct EngineSettings {
-    pub config: AnalysisConfig,
-    pub known_risky_txids: Option<HashSet<String>>,
-    pub known_exchange_txids: Option<HashSet<String>>,
-}
-
-impl Default for EngineSettings {
-    fn default() -> Self {
-        Self {
-            config: AnalysisConfig::default(),
-            known_risky_txids: None,
-            known_exchange_txids: None,
-        }
     }
 }
 
@@ -115,7 +72,7 @@ impl<'a> AnalysisEngine<'a> {
             &normalizer,
         )?;
         let history = self.gateway.scan_descriptors(&resolved)?;
-        let mut graph = TxGraph::from_wallet_history(history);
+        let graph = TxGraph::from_wallet_history(history);
         Ok(graph.detect_all(
             self.settings.known_risky_txids.as_ref(),
             self.settings.known_exchange_txids.as_ref(),
@@ -126,7 +83,7 @@ impl<'a> AnalysisEngine<'a> {
 
     fn analyze_utxos(&self, utxos: Vec<UtxoInput>) -> Result<Report, AnalysisError> {
         let history = self.resolve_utxo_history(&utxos)?;
-        let mut graph = TxGraph::from_wallet_history(history);
+        let graph = TxGraph::from_wallet_history(history);
         Ok(graph.detect_all(
             self.settings.known_risky_txids.as_ref(),
             self.settings.known_exchange_txids.as_ref(),

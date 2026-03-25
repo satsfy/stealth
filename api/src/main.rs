@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use stealth_api::app_with_gateway;
-use stealth_bitcoincore::BitcoinCoreRpc;
+use stealth_bitcoincore::{read_cookie_file, BitcoinCoreRpc};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -54,23 +54,6 @@ fn build_gateway() -> Result<BitcoinCoreRpc, Box<dyn std::error::Error>> {
     };
 
     Ok(BitcoinCoreRpc::from_url(&url, user, pass)?)
-}
-
-fn read_cookie_file(path: &Path) -> Result<(String, String), Box<dyn std::error::Error>> {
-    let contents = std::fs::read_to_string(path)
-        .map_err(|e| format!("cannot read cookie file {}: {e}", path.display()))?;
-    let mut parts = contents.trim().splitn(2, ':');
-    let user = parts
-        .next()
-        .filter(|s| !s.is_empty())
-        .ok_or("empty cookie user")?
-        .to_string();
-    let pass = parts
-        .next()
-        .filter(|s| !s.is_empty())
-        .ok_or("empty cookie password")?
-        .to_string();
-    Ok((user, pass))
 }
 
 fn init_tracing() {

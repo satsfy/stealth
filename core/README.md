@@ -3,10 +3,10 @@
 Detects Bitcoin UTXO privacy vulnerabilities by analysing a wallet's transaction
 history on a Bitcoin Core node via JSON-RPC.
 
-The library connects to a running `bitcoind`, fetches the wallet's transaction
-history and current UTXO set, then runs **12 independent vulnerability
-detectors** through `TxGraph::detect_all()`. Results are returned as a
-structured `Report` that serialises to JSON.
+The library receives a pre-built `WalletHistory` (via any `BlockchainGateway`
+implementation), indexes it into a `TxGraph`, then runs **17 independent
+vulnerability detectors** through `TxGraph::detect_all()`. Results are returned
+as a structured `Report` that serialises to JSON.
 
 Primary public scanning API: `TxGraph::detect_all(...)`.
 
@@ -26,6 +26,11 @@ Primary public scanning API: `TxGraph::detect_all(...)`.
 | 10  | Exchange-origin batch withdrawal        | MEDIUM           |
 | 11  | Tainted UTXO merge                      | HIGH             |
 | 12  | Behavioural fingerprinting              | MEDIUM           |
+| 13  | Dust attack                             | CRITICAL         |
+| 14  | Peel chain                              | HIGH – CRITICAL  |
+| 15  | Deterministic input-output link         | HIGH             |
+| 16  | Unnecessary input                       | MEDIUM           |
+| 17  | Toxic change                            | HIGH             |
 
 ## Prerequisites
 
@@ -60,13 +65,14 @@ stealth-core = "0.1.0"
 ```
 
 ```rust
-use corepc_client::client_sync::v29::Client;
-use stealth_core::{TxGraph, VulnerabilityType};
+use stealth_core::TxGraph;
+use stealth_bitcoincore::BitcoinCoreRpc;
 
 // Connect to a wallet-loaded bitcoind
-let client = Client::new("http://127.0.0.1:8332", "user", "pass").unwrap();
+let gateway = BitcoinCoreRpc::new("http://127.0.0.1:8332", "user", "pass").unwrap();
+let history = gateway.scan_wallet("my_wallet").unwrap();
 
-let mut graph = TxGraph::build(client).unwrap();
+let graph = TxGraph::from_wallet_history(history);
 let report = graph.detect_all(None, None);
 
 for finding in &report.findings {
@@ -81,7 +87,7 @@ The integration tests spin up a temporary `bitcoind` in regtest mode
 No external setup is required — just ensure `bitcoind` is on your `PATH`.
 
 ```bash
-# Run all tests (unit + 13 regtest integration tests)
+# Run all tests (unit + all regtest integration tests)
 cargo test -p stealth-core
 
 # Run a single test with output
@@ -98,13 +104,13 @@ core/
 ├── Cargo.toml
 ├── src/
 │   ├── lib.rs        # Crate root and re-exports
-│   ├── types.rs      # Severity, VulnerabilityType, Finding, Report
-│   ├── graph.rs      # TxGraph — builds wallet tx graph via RPC
-│   └── detect.rs     # 12 vulnerability detectors + detect_all()
+│   ├── engine.rs     # AnalysisEngine — canonical scan entry point
+│   ├── graph.rs      # TxGraph — indexed wallet transaction view
+│   └── detect.rs     # all vulnerability detectors + detect_all()
 └── tests/
-    └── integration.rs  # 13 regtest integration tests
+    └── integration.rs  # all regtest integration tests
 ```
 
 ## License
 
-[CC0-1.0](../LICENSE)
+[MIT](../LICENSE)

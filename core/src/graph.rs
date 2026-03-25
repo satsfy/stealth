@@ -3,15 +3,14 @@ use std::str::FromStr;
 
 use bitcoin::address::NetworkUnchecked;
 use bitcoin::Address;
-use corepc_client::client_sync::{v29::Client, Result as RpcResult};
 
 use crate::gateway::{DecodedTransaction, WalletHistory, WalletTxCategory};
-use crate::types::{AddressInfo, InputInfo, OutputInfo, WalletTx};
+use crate::types::{btc_to_sats, AddressInfo, InputInfo, OutputInfo, WalletTx};
 
 /// Indexed view of all transactions touching a wallet's address set.
 ///
-/// The graph lazily fetches and caches raw transactions from the RPC node
-/// as detectors request input/output data for specific txids.
+/// All caches are populated up-front from a [`WalletHistory`] so no live
+/// RPC connection is needed at detection time.
 #[derive(Debug)]
 pub struct TxGraph {
     /// Map of our addresses → metadata.
@@ -27,15 +26,14 @@ pub struct TxGraph {
     /// Per-txid set of our addresses involved.
     pub tx_addrs: HashMap<String, HashSet<String>>,
 
-    /// Client reference for lazy tx fetches (absent when built from
-    /// a pre-fetched [`WalletHistory`]).
-    pub client: Option<Client>,
-    /// Cached decoded transactions (txid → JSON value).
-    pub tx_cache: HashMap<String, serde_json::Value>,
+    /// Decoded transactions keyed by txid.
+    pub tx_cache: HashMap<String, DecodedTransaction>,
     /// Cached input addresses per txid.
     pub input_cache: HashMap<String, Vec<InputInfo>>,
     /// Cached output addresses per txid.
     pub output_cache: HashMap<String, Vec<OutputInfo>>,
+    /// Reverse spending index: (parent_txid, vout) → spending txid.
+    spending_index: HashMap<(String, u32), String>,
 }
 
 /// A UTXO entry from `listunspent`.
@@ -44,163 +42,11 @@ pub struct UtxoEntry {
     pub txid: String,
     pub vout: u32,
     pub address: String,
-    pub amount: f64,
+    pub amount_sats: u64,
     pub confirmations: i64,
 }
 
 impl TxGraph {
-    /// Build a `TxGraph` by querying the RPC client for the wallet's
-    /// full transaction history and current UTXO set.
-    pub fn build(client: Client) -> RpcResult<Self> {
-        // Get all transactions (listsinceblock includes change addresses)
-        let list_txs = client.list_since_block()?;
-        let wallet_txs: Vec<WalletTx> = list_txs
-            .transactions
-            .iter()
-            .map(|item| WalletTx {
-                txid: item.txid.clone(),
-                address: item.address.clone().unwrap_or_default(),
-                category: format!("{:?}", item.category).to_lowercase(),
-                amount: item.amount,
-                confirmations: item.confirmations,
-            })
-            .collect();
-
-        // Get all UTXOs
-        let list_unspent = client.list_unspent()?;
-        let utxos: Vec<UtxoEntry> = list_unspent
-            .0
-            .iter()
-            .map(|item| UtxoEntry {
-                txid: item.txid.clone(),
-                vout: item.vout as u32,
-                address: item.address.clone(),
-                amount: item.amount,
-                confirmations: item.confirmations,
-            })
-            .collect();
-
-        // Build indices
-        let mut our_txids = HashSet::new();
-        let mut addr_txs: HashMap<String, Vec<WalletTx>> = HashMap::new();
-        let mut tx_addrs: HashMap<String, HashSet<String>> = HashMap::new();
-
-        for wtx in &wallet_txs {
-            if !wtx.txid.is_empty() {
-                our_txids.insert(wtx.txid.clone());
-            }
-            if !wtx.address.is_empty() && !wtx.txid.is_empty() {
-                addr_txs
-                    .entry(wtx.address.clone())
-                    .or_default()
-                    .push(wtx.clone());
-                tx_addrs
-                    .entry(wtx.txid.clone())
-                    .or_default()
-                    .insert(wtx.address.clone());
-            }
-        }
-
-        // Derive address map from UTXOs (basic — full descriptor resolution
-        // would require importdescriptors support).
-        let mut our_addrs = HashSet::new();
-        let mut addr_map = HashMap::new();
-        for utxo in &utxos {
-            our_addrs.insert(utxo.address.clone());
-            addr_map
-                .entry(utxo.address.clone())
-                .or_insert_with(|| AddressInfo {
-                    script_type: script_type_from_address(&utxo.address),
-                    internal: false,
-                    index: 0,
-                });
-        }
-        // Also include addresses seen in transaction history.
-        // Only "receive" entries are our addresses; "send" entries have the
-        // counterparty's destination address.
-        for wtx in &wallet_txs {
-            if !wtx.address.is_empty() && wtx.category != "send" {
-                our_addrs.insert(wtx.address.clone());
-                addr_map
-                    .entry(wtx.address.clone())
-                    .or_insert_with(|| AddressInfo {
-                        script_type: script_type_from_address(&wtx.address),
-                        internal: false,
-                        index: 0,
-                    });
-            }
-        }
-        // list_since_block/list_transactions omit change addresses.
-        // list_address_groupings includes ALL used addresses (including change).
-        if let Ok(groupings) = client.list_address_groupings() {
-            let json = serde_json::to_value(&groupings).unwrap_or_default();
-            if let Some(groups) = json.as_array() {
-                for group in groups {
-                    if let Some(items) = group.as_array() {
-                        for item in items {
-                            let addr = item
-                                .as_array()
-                                .and_then(|a| a.first())
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
-                            if !addr.is_empty() {
-                                our_addrs.insert(addr.to_string());
-                                addr_map
-                                    .entry(addr.to_string())
-                                    .or_insert_with(|| AddressInfo {
-                                        script_type: script_type_from_address(addr),
-                                        internal: false,
-                                        index: 0,
-                                    });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Populate `internal` and `index` from the HD key path reported
-        // by `getaddressinfo`. BIP-44/49/84/86 paths look like:
-        //   m/<purpose>'/<coin>'/<account>'/<change>/<index>
-        // where <change> == 1 means internal (change) address.
-        for addr_str in &our_addrs {
-            if let Ok(address) = addr_str
-                .parse::<bitcoin::Address<NetworkUnchecked>>()
-                .map(|a| a.assume_checked())
-            {
-                if let Ok(info) = client.get_address_info(&address) {
-                    if let Some(ref path) = info.hd_key_path {
-                        let parts: Vec<&str> = path.split('/').collect();
-                        // e.g. ["m", "84'", "1'", "0'", "1", "5"]
-                        if parts.len() >= 2 {
-                            let change_part = parts[parts.len() - 2];
-                            let index_part = parts[parts.len() - 1];
-                            let is_internal = change_part == "1";
-                            let idx = index_part.parse::<usize>().unwrap_or(0);
-                            if let Some(ai) = addr_map.get_mut(addr_str) {
-                                ai.internal = is_internal;
-                                ai.index = idx;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(TxGraph {
-            addr_map,
-            our_addrs,
-            utxos,
-            our_txids,
-            addr_txs,
-            tx_addrs,
-            client: Some(client),
-            tx_cache: HashMap::new(),
-            input_cache: HashMap::new(),
-            output_cache: HashMap::new(),
-        })
-    }
-
     /// Check whether an address belongs to our wallet.
     pub fn is_ours(&self, address: &str) -> bool {
         self.our_addrs.contains(address)
@@ -214,141 +60,26 @@ impl TxGraph {
             .unwrap_or_else(|| script_type_from_address(address))
     }
 
-    /// Fetch a decoded transaction as a JSON value (cached).
-    pub fn fetch_tx(&mut self, txid: &str) -> Option<serde_json::Value> {
-        if let Some(cached) = self.tx_cache.get(txid) {
-            return Some(cached.clone());
-        }
-        let client = self.client.as_ref()?;
-        let txid_parsed: bitcoin::Txid = txid.parse().ok()?;
-        let raw = client.get_raw_transaction_verbose(txid_parsed).ok()?;
-        let value = serde_json::to_value(&raw).ok()?;
-        self.tx_cache.insert(txid.to_string(), value.clone());
-        Some(value)
+    /// Look up a decoded transaction by txid.
+    pub fn fetch_tx(&self, txid: &str) -> Option<&DecodedTransaction> {
+        self.tx_cache.get(txid)
     }
 
-    /// Get all input addresses for a transaction (cached).
-    pub fn get_input_addresses(&mut self, txid: &str) -> Vec<InputInfo> {
-        if let Some(cached) = self.input_cache.get(txid) {
-            return cached.clone();
-        }
-
-        let tx = match self.fetch_tx(txid) {
-            Some(tx) => tx,
-            None => {
-                self.input_cache.insert(txid.to_string(), vec![]);
-                return vec![];
-            }
-        };
-
-        let mut addrs = Vec::new();
-        if let Some(inputs) = tx.get("vin").and_then(|v| v.as_array()) {
-            for vin in inputs {
-                if vin.get("coinbase").is_some() {
-                    continue;
-                }
-                let parent_txid = match vin.get("txid").and_then(|v| v.as_str()) {
-                    Some(t) => t.to_string(),
-                    None => continue,
-                };
-                let vout = vin.get("vout").and_then(|v| v.as_u64()).unwrap_or(0);
-                if let Some(parent) = self.fetch_tx(&parent_txid) {
-                    if let Some(outputs) = parent.get("vout").and_then(|v| v.as_array()) {
-                        if let Some(vout_data) = outputs.get(vout as usize) {
-                            let addr = vout_data
-                                .pointer("/scriptPubKey/address")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let value = vout_data
-                                .get("value")
-                                .and_then(|v| v.as_f64())
-                                .unwrap_or(0.0);
-                            addrs.push(InputInfo {
-                                address: addr,
-                                value,
-                                funding_txid: parent_txid,
-                                funding_vout: vout as u32,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        self.input_cache.insert(txid.to_string(), addrs.clone());
-        addrs
+    /// Get all input addresses for a transaction.
+    pub fn get_input_addresses(&self, txid: &str) -> Vec<InputInfo> {
+        self.input_cache.get(txid).cloned().unwrap_or_default()
     }
 
-    /// Get all output addresses for a transaction (cached).
-    pub fn get_output_addresses(&mut self, txid: &str) -> Vec<OutputInfo> {
-        if let Some(cached) = self.output_cache.get(txid) {
-            return cached.clone();
-        }
-
-        let tx = match self.fetch_tx(txid) {
-            Some(tx) => tx,
-            None => {
-                self.output_cache.insert(txid.to_string(), vec![]);
-                return vec![];
-            }
-        };
-
-        let mut addrs = Vec::new();
-        if let Some(outputs) = tx.get("vout").and_then(|v| v.as_array()) {
-            for vout in outputs {
-                let addr = vout
-                    .pointer("/scriptPubKey/address")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let value = vout.get("value").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                let index = vout.get("n").and_then(|v| v.as_u64()).unwrap_or(0);
-                let script_type = if !addr.is_empty() {
-                    script_type_from_address(&addr)
-                } else {
-                    // Fallback: normalise the RPC type string.
-                    let raw = vout
-                        .pointer("/scriptPubKey/type")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown");
-                    normalize_rpc_script_type(raw).into()
-                };
-                addrs.push(OutputInfo {
-                    address: addr,
-                    value,
-                    index,
-                    script_type,
-                });
-            }
-        }
-
-        self.output_cache.insert(txid.to_string(), addrs.clone());
-        addrs
+    /// Get all output addresses for a transaction.
+    pub fn get_output_addresses(&self, txid: &str) -> Vec<OutputInfo> {
+        self.output_cache.get(txid).cloned().unwrap_or_default()
     }
 
     /// Find a wallet transaction that spends the output `txid:vout`.
-    ///
-    /// Searches across all known wallet transaction IDs. Returns the
-    /// spending txid if found.
-    pub fn find_spending_tx(&mut self, txid: &str, vout: u32) -> Option<String> {
-        let txids: Vec<String> = self.our_txids.iter().cloned().collect();
-        for candidate in &txids {
-            if candidate == txid {
-                continue;
-            }
-            let tx = self.fetch_tx(candidate)?;
-            if let Some(vins) = tx.get("vin").and_then(|v| v.as_array()) {
-                for vin in vins {
-                    let parent = vin.get("txid").and_then(|v| v.as_str()).unwrap_or("");
-                    let v = vin.get("vout").and_then(|v| v.as_u64()).unwrap_or(u64::MAX);
-                    if parent == txid && v == vout as u64 {
-                        return Some(candidate.clone());
-                    }
-                }
-            }
-        }
-        None
+    pub fn find_spending_tx(&self, txid: &str, vout: u32) -> Option<String> {
+        self.spending_index
+            .get(&(txid.to_string(), vout))
+            .cloned()
     }
 
     /// Build a [`TxGraph`] from a pre-fetched [`WalletHistory`] produced
@@ -379,7 +110,7 @@ impl TxGraph {
                     WalletTxCategory::Receive => "receive".to_string(),
                     WalletTxCategory::Unknown => "unknown".to_string(),
                 },
-                amount: entry.amount_btc,
+                amount_sats: btc_to_sats(entry.amount_btc),
                 confirmations: entry.confirmations as i64,
             };
 
@@ -420,7 +151,7 @@ impl TxGraph {
                     txid: u.txid.clone(),
                     vout: u.vout,
                     address: u.address.clone(),
-                    amount: u.amount_btc,
+                    amount_sats: btc_to_sats(u.amount_btc),
                     confirmations: u.confirmations as i64,
                 }
             })
@@ -430,9 +161,20 @@ impl TxGraph {
         let mut tx_cache = HashMap::new();
         let mut input_cache: HashMap<String, Vec<InputInfo>> = HashMap::new();
         let mut output_cache: HashMap<String, Vec<OutputInfo>> = HashMap::new();
+        let mut spending_index: HashMap<(String, u32), String> = HashMap::new();
 
         for (txid, tx) in &history.transactions {
-            tx_cache.insert(txid.clone(), decoded_tx_to_rpc_json(tx));
+            tx_cache.insert(txid.clone(), tx.clone());
+
+            // Build reverse spending index.
+            for vin in &tx.vin {
+                if !vin.coinbase {
+                    spending_index.insert(
+                        (vin.previous_txid.clone(), vin.previous_vout),
+                        txid.clone(),
+                    );
+                }
+            }
 
             let inputs: Vec<InputInfo> = tx
                 .vin
@@ -445,7 +187,7 @@ impl TxGraph {
                     let out = parent.vout.iter().find(|o| o.n == input.previous_vout)?;
                     Some(InputInfo {
                         address: out.address.clone(),
-                        value: out.value_btc,
+                        value_sats: btc_to_sats(out.value_btc),
                         funding_txid: input.previous_txid.clone(),
                         funding_vout: input.previous_vout,
                     })
@@ -458,7 +200,7 @@ impl TxGraph {
                 .iter()
                 .map(|out| OutputInfo {
                     address: out.address.clone(),
-                    value: out.value_btc,
+                    value_sats: btc_to_sats(out.value_btc),
                     index: out.n as u64,
                     script_type: if !out.address.is_empty() {
                         script_type_from_address(&out.address)
@@ -477,10 +219,10 @@ impl TxGraph {
             our_txids,
             addr_txs,
             tx_addrs,
-            client: None,
             tx_cache,
             input_cache,
             output_cache,
+            spending_index,
         }
     }
 }
@@ -520,73 +262,4 @@ pub fn script_type_from_address(address: &str) -> String {
     }
 
     "unknown".into()
-}
-
-/// Normalise the `scriptPubKey.type` string that Bitcoin Core returns in
-/// `getrawtransaction` / `decoderawtransaction` to the canonical short names
-/// used throughout stealth-core.
-fn normalize_rpc_script_type(raw: &str) -> &str {
-    match raw {
-        "witness_v0_keyhash" => "p2wpkh",
-        "witness_v0_scripthash" => "p2wsh",
-        "witness_v1_taproot" => "p2tr",
-        "pubkeyhash" => "p2pkh",
-        "scripthash" => "p2sh",
-        "pubkey" => "p2pk",
-        "multisig" => "multisig",
-        "nulldata" => "op_return",
-        other => other,
-    }
-}
-
-/// Convert a [`DecodedTransaction`] into a `serde_json::Value` that mirrors
-/// the structure returned by Bitcoin Core's `getrawtransaction` (verbose).
-///
-/// This is necessary because the vulnerability detectors in [`detect`]
-/// navigate the JSON directly (e.g. `tx["vin"]`, `tx["vout"]`,
-/// `tx["locktime"]`).
-fn decoded_tx_to_rpc_json(tx: &DecodedTransaction) -> serde_json::Value {
-    let vin: Vec<serde_json::Value> = tx
-        .vin
-        .iter()
-        .map(|input| {
-            if input.coinbase {
-                serde_json::json!({
-                    "coinbase": "",
-                    "sequence": input.sequence,
-                })
-            } else {
-                serde_json::json!({
-                    "txid": input.previous_txid,
-                    "vout": input.previous_vout,
-                    "sequence": input.sequence,
-                })
-            }
-        })
-        .collect();
-
-    let vout: Vec<serde_json::Value> = tx
-        .vout
-        .iter()
-        .map(|output| {
-            serde_json::json!({
-                "n": output.n,
-                "value": output.value_btc,
-                "scriptPubKey": {
-                    "address": output.address,
-                    "type": output.script_type.as_script_name(),
-                }
-            })
-        })
-        .collect();
-
-    serde_json::json!({
-        "txid": tx.txid,
-        "version": tx.version,
-        "locktime": tx.locktime,
-        "vsize": tx.vsize,
-        "confirmations": tx.confirmations,
-        "vin": vin,
-        "vout": vout,
-    })
 }

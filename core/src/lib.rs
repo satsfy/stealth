@@ -37,16 +37,15 @@
 //! | 16 | Unnecessary input (excess CIOH exposure) | MEDIUM |
 //! | 17 | Toxic change consolidation | HIGH |
 
-pub mod config;
-pub mod descriptor;
+pub use stealth_domain::config;
+pub use stealth_domain::descriptor;
 mod detect;
 pub mod engine;
-pub mod error;
-pub mod gateway;
+pub use stealth_domain::error;
+pub use stealth_domain::gateway;
 mod graph;
-pub mod scanner;
-mod types;
+pub use stealth_domain::types;
 
 pub use engine::{AnalysisEngine, EngineSettings, ScanTarget, UtxoInput};
 pub use graph::TxGraph;
-pub use types::*;
+pub use stealth_domain::types::*;

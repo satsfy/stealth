@@ -30,6 +30,7 @@ The immediate focus is enabling analysis of real wallet data using a local Bitco
 Stealth now ships a Rust workspace with:
 
 - `stealth-core` (analysis engine)
+- `stealth-domain` (domain model types)
 - `stealth-api` (HTTP API)
 - `stealth-cli` (terminal scanner)
 - `stealth-bitcoincore` (Bitcoin Core RPC gateway abstraction)
@@ -109,7 +110,7 @@ core/src/detect.rs
 The report model and type names are defined in:
 
 ```
-core/src/types.rs
+types/src/types.rs
 ```
 
 ## Example risks detected
@@ -132,7 +133,6 @@ Stealth identifies real-world privacy issues such as:
 | ---------- | ------- | ------------ |
 | Rust | `1.93.1+` | `core`, `api`, `cli`, tests |
 | Bitcoin Core (`bitcoind`) | `29.0+` recommended | Local blockchain/RPC source |
-| Java 21 | Optional | Legacy backend (`backend/src/StealthBackend`) |
 | Node.js + Yarn | Optional | Frontend (`frontend/`) |
 
 ### 1. Clone and build
@@ -213,7 +213,7 @@ cargo run --bin stealth-cli -- scan \
 
 ### Short term
 
-- [ ] Rewrite the analysis engine in Rust, replacing the current multi-language implementation
+- [x] Rewrite the analysis engine in Rust, replacing the current multi-language implementation
 - [ ] Add support for analyzing real wallet data using a local Bitcoin node (mainnet)
 
 ### Medium term
@@ -234,11 +234,12 @@ stealth/
 ├── core/                   # stealth-core (detectors + graph + report model)
 │   ├── src/
 │   │   ├── detect.rs       # 17 privacy detectors
+│   │   ├── engine.rs       # AnalysisEngine entry point
 │   │   ├── graph.rs        # Transaction graph builder
-│   │   ├── scanner.rs      # RPC-driven scan entry points
-│   │   └── types.rs        # Severity, finding, warning, report types
+│   │   └── lib.rs          # Crate root and re-exports
 │   └── tests/
 │       └── integration.rs  # Regtest integration tests
+├── types/                  # stealth-domain (domain model types)
 ├── api/                    # stealth-api (Axum HTTP layer)
 │   ├── src/
 │   └── tests/

@@ -1,8 +1,8 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::{env, fs};
 
-use stealth_bitcoincore::BitcoinCoreRpc;
+use stealth_bitcoincore::{read_cookie_file, BitcoinCoreRpc};
 use stealth_core::engine::{AnalysisEngine, EngineSettings, ScanTarget, UtxoInput};
 
 fn main() -> ExitCode {
@@ -90,7 +90,7 @@ impl ScanOpts {
         ) {
             (Some(user), Some(pass), _) => (Some(user), Some(pass)),
             (_, _, Some(cookie_path)) => {
-                let (u, p) = read_cookie_file(&cookie_path)?;
+                let (u, p) = read_cookie_file(&cookie_path).map_err(|e| e.to_string())?;
                 (Some(u), Some(p))
             }
             _ => (None, None),
@@ -142,23 +142,6 @@ impl ScanOpts {
 
         Err("no scan target specified".to_owned())
     }
-}
-
-fn read_cookie_file(path: &Path) -> Result<(String, String), String> {
-    let contents = fs::read_to_string(path)
-        .map_err(|e| format!("cannot read cookie file {}: {e}", path.display()))?;
-    let mut parts = contents.trim().splitn(2, ':');
-    let user = parts
-        .next()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| format!("invalid cookie file {}", path.display()))?
-        .to_string();
-    let pass = parts
-        .next()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| format!("invalid cookie file {}", path.display()))?
-        .to_string();
-    Ok((user, pass))
 }
 
 fn parse_scan_args(args: &[String]) -> Result<ScanOpts, String> {

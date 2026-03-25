@@ -112,6 +112,11 @@ impl Report {
     }
 }
 
+/// Convert a BTC f64 value to satoshis.
+pub fn btc_to_sats(btc: f64) -> u64 {
+    (btc * 1e8).round() as u64
+}
+
 /// Metadata about a derived address.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddressInfo {
@@ -127,7 +132,7 @@ pub struct AddressInfo {
 #[derive(Debug, Clone)]
 pub struct InputInfo {
     pub address: String,
-    pub value: f64,
+    pub value_sats: u64,
     pub funding_txid: String,
     pub funding_vout: u32,
 }
@@ -136,7 +141,7 @@ pub struct InputInfo {
 #[derive(Debug, Clone)]
 pub struct OutputInfo {
     pub address: String,
-    pub value: f64,
+    pub value_sats: u64,
     pub index: u64,
     pub script_type: String,
 }
@@ -147,6 +152,6 @@ pub struct WalletTx {
     pub txid: String,
     pub address: String,
     pub category: String,
-    pub amount: f64,
+    pub amount_sats: u64,
     pub confirmations: i64,
 }

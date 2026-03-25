@@ -2,12 +2,15 @@
 //!
 //! Each test spins up a fresh regtest Bitcoin Core via `corepc-node`,
 //! reproduces one or more privacy vulnerabilities, then runs the
-//! detector to verify it fires the expected finding(s).
+//! detector through the canonical `AnalysisEngine` + `BitcoinCoreRpc`
+//! gateway path to verify it fires the expected finding(s).
 
 use std::collections::{BTreeMap, HashSet};
 
 use corepc_node::client::bitcoin::{Address, Amount};
 use corepc_node::{AddressType, Input, Node, Output};
+use stealth_bitcoincore::BitcoinCoreRpc;
+use stealth_core::gateway::BlockchainGateway;
 use stealth_core::{TxGraph, VulnerabilityType};
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -23,21 +26,34 @@ fn mine(node: &Node, n: usize, addr: &Address) {
     node.client.generate_to_address(n, addr).unwrap();
 }
 
-fn has_finding(graph: &mut TxGraph, vtype: VulnerabilityType) -> bool {
-    let report = graph.detect_all(None, None);
-    report
-        .findings
-        .iter()
-        .any(|f| f.vulnerability_type == vtype)
+fn gateway_for(node: &Node) -> BitcoinCoreRpc {
+    let cookie = std::fs::read_to_string(&node.params.cookie_file)
+        .expect("failed to read cookie file");
+    let mut parts = cookie.trim().splitn(2, ':');
+    let user = parts.next().unwrap().to_string();
+    let pass = parts.next().unwrap().to_string();
+    BitcoinCoreRpc::from_url(&node.rpc_url(), Some(user), Some(pass))
+        .expect("failed to build gateway")
 }
 
-fn has_finding_with(
-    graph: &mut TxGraph,
-    vtype: VulnerabilityType,
+fn scan_wallet(gateway: &BitcoinCoreRpc, wallet: &str) -> stealth_core::Report {
+    let history = gateway.scan_wallet(wallet).expect("scan_wallet failed");
+    let graph = TxGraph::from_wallet_history(history);
+    graph.detect_all(None, None)
+}
+
+fn scan_wallet_with(
+    gateway: &BitcoinCoreRpc,
+    wallet: &str,
     known_risky: Option<&HashSet<String>>,
     known_exchange: Option<&HashSet<String>>,
-) -> bool {
-    let report = graph.detect_all(known_risky, known_exchange);
+) -> stealth_core::Report {
+    let history = gateway.scan_wallet(wallet).expect("scan_wallet failed");
+    let graph = TxGraph::from_wallet_history(history);
+    graph.detect_all(known_risky, known_exchange)
+}
+
+fn has_finding(report: &stealth_core::Report, vtype: VulnerabilityType) -> bool {
     report
         .findings
         .iter()
@@ -66,8 +82,9 @@ fn detect_address_reuse() {
         .unwrap();
     mine(&node, 1, &da);
 
-    let mut graph = TxGraph::build(alice).unwrap();
-    assert!(has_finding(&mut graph, VulnerabilityType::AddressReuse));
+    let gateway = gateway_for(&node);
+    let report = scan_wallet(&gateway, "alice");
+    assert!(has_finding(&report, VulnerabilityType::AddressReuse));
 }
 
 // ─── 2. Common Input Ownership Heuristic (CIOH) ────────────────────────────
@@ -119,8 +136,9 @@ fn detect_cioh() {
     alice.send_raw_transaction(&stx).unwrap();
     mine(&node, 1, &da);
 
-    let mut graph = TxGraph::build(alice).unwrap();
-    assert!(has_finding(&mut graph, VulnerabilityType::Cioh));
+    let gateway = gateway_for(&node);
+    let report = scan_wallet(&gateway, "alice");
+    assert!(has_finding(&report, VulnerabilityType::Cioh));
 }
 
 // ─── 3. Dust UTXO Detection ────────────────────────────────────────────────
@@ -171,8 +189,9 @@ fn detect_dust() {
     bob.send_raw_transaction(&stx).unwrap();
     mine(&node, 1, &da);
 
-    let mut graph = TxGraph::build(alice).unwrap();
-    assert!(has_finding(&mut graph, VulnerabilityType::Dust));
+    let gateway = gateway_for(&node);
+    let report = scan_wallet(&gateway, "alice");
+    assert!(has_finding(&report, VulnerabilityType::Dust));
 }
 
 // ─── 4. Dust Spending with Normal Inputs ────────────────────────────────────
@@ -270,8 +289,9 @@ fn detect_dust_spending() {
     alice.send_raw_transaction(&stx).unwrap();
     mine(&node, 1, &da);
 
-    let mut graph = TxGraph::build(alice).unwrap();
-    assert!(has_finding(&mut graph, VulnerabilityType::DustSpending));
+    let gateway = gateway_for(&node);
+    let report = scan_wallet(&gateway, "alice");
+    assert!(has_finding(&report, VulnerabilityType::DustSpending));
 }
 
 // ─── 5. Change Detection ───────────────────────────────────────────────────
@@ -298,8 +318,9 @@ fn detect_change_detection() {
         .unwrap();
     mine(&node, 1, &da);
 
-    let mut graph = TxGraph::build(alice).unwrap();
-    assert!(has_finding(&mut graph, VulnerabilityType::ChangeDetection));
+    let gateway = gateway_for(&node);
+    let report = scan_wallet(&gateway, "alice");
+    assert!(has_finding(&report, VulnerabilityType::ChangeDetection));
 }
 
 // ─── 6. Consolidation Origin ───────────────────────────────────────────────
@@ -359,8 +380,9 @@ fn detect_consolidation() {
     alice.send_raw_transaction(&stx).unwrap();
     mine(&node, 1, &da);
 
-    let mut graph = TxGraph::build(alice).unwrap();
-    assert!(has_finding(&mut graph, VulnerabilityType::Consolidation));
+    let gateway = gateway_for(&node);
+    let report = scan_wallet(&gateway, "alice");
+    assert!(has_finding(&report, VulnerabilityType::Consolidation));
 }
 
 // ─── 7. Script Type Mixing ─────────────────────────────────────────────────
@@ -419,8 +441,9 @@ fn detect_script_type_mixing() {
     alice.send_raw_transaction(&stx).unwrap();
     mine(&node, 1, &da);
 
-    let mut graph = TxGraph::build(alice).unwrap();
-    assert!(has_finding(&mut graph, VulnerabilityType::ScriptTypeMixing));
+    let gateway = gateway_for(&node);
+    let report = scan_wallet(&gateway, "alice");
+    assert!(has_finding(&report, VulnerabilityType::ScriptTypeMixing));
 }
 
 // ─── 8. Cluster Merge ──────────────────────────────────────────────────────
@@ -485,8 +508,9 @@ fn detect_cluster_merge() {
     alice.send_raw_transaction(&stx).unwrap();
     mine(&node, 1, &da);
 
-    let mut graph = TxGraph::build(alice).unwrap();
-    assert!(has_finding(&mut graph, VulnerabilityType::ClusterMerge));
+    let gateway = gateway_for(&node);
+    let report = scan_wallet(&gateway, "alice");
+    assert!(has_finding(&report, VulnerabilityType::ClusterMerge));
 }
 
 // ─── 9. Lookback Depth / UTXO Age ──────────────────────────────────────────
@@ -513,8 +537,9 @@ fn detect_utxo_age_spread() {
         .unwrap();
     mine(&node, 1, &da);
 
-    let mut graph = TxGraph::build(alice).unwrap();
-    assert!(has_finding(&mut graph, VulnerabilityType::UtxoAgeSpread));
+    let gateway = gateway_for(&node);
+    let report = scan_wallet(&gateway, "alice");
+    assert!(has_finding(&report, VulnerabilityType::UtxoAgeSpread));
 }
 
 // ─── 10. Exchange Origin ───────────────────────────────────────────────────
@@ -549,13 +574,9 @@ fn detect_exchange_origin() {
     mine(&node, 1, &da);
 
     let exchange_txids: HashSet<String> = [send_result.0.clone()].into_iter().collect();
-    let mut graph = TxGraph::build(alice).unwrap();
-    assert!(has_finding_with(
-        &mut graph,
-        VulnerabilityType::ExchangeOrigin,
-        None,
-        Some(&exchange_txids)
-    ));
+    let gateway = gateway_for(&node);
+    let report = scan_wallet_with(&gateway, "alice", None, Some(&exchange_txids));
+    assert!(has_finding(&report, VulnerabilityType::ExchangeOrigin));
 }
 
 // ─── 11. Tainted UTXOs ─────────────────────────────────────────────────────
@@ -627,13 +648,9 @@ fn detect_tainted_utxo_merge() {
     mine(&node, 1, &da);
 
     let risky_txids: HashSet<String> = [taint_txid].into_iter().collect();
-    let mut graph = TxGraph::build(alice).unwrap();
-    assert!(has_finding_with(
-        &mut graph,
-        VulnerabilityType::TaintedUtxoMerge,
-        Some(&risky_txids),
-        None
-    ));
+    let gateway = gateway_for(&node);
+    let report = scan_wallet_with(&gateway, "alice", Some(&risky_txids), None);
+    assert!(has_finding(&report, VulnerabilityType::TaintedUtxoMerge));
 }
 
 // ─── 12. Behavioral Fingerprint ────────────────────────────────────────────
@@ -663,8 +680,8 @@ fn detect_behavioral_fingerprint() {
         mine(&node, 1, &da);
     }
 
-    let mut graph = TxGraph::build(alice).unwrap();
-    let report = graph.detect_all(None, None);
+    let gateway = gateway_for(&node);
+    let report = scan_wallet(&gateway, "alice");
     assert!(report
         .findings
         .iter()
@@ -684,8 +701,8 @@ fn full_report_generates() {
     node.client.send_to_address(&aa, Amount::ONE_BTC).unwrap();
     mine(&node, 1, &da);
 
-    let mut graph = TxGraph::build(alice).unwrap();
-    let report = graph.detect_all(None, None);
+    let gateway = gateway_for(&node);
+    let report = scan_wallet(&gateway, "alice");
 
     assert_eq!(
         report.summary.findings + report.summary.warnings,
@@ -759,8 +776,9 @@ fn detect_dust_attack() {
     attacker.send_raw_transaction(&stx).unwrap();
     mine(&node, 1, &da);
 
-    let mut graph = TxGraph::build(alice).unwrap();
-    assert!(has_finding(&mut graph, VulnerabilityType::DustAttack));
+    let gateway = gateway_for(&node);
+    let report = scan_wallet(&gateway, "alice");
+    assert!(has_finding(&report, VulnerabilityType::DustAttack));
 }
 
 // ─── 14. Peel Chain Detection ──────────────────────────────────────────────
@@ -817,8 +835,9 @@ fn detect_peel_chain() {
         mine(&node, 1, &da);
     }
 
-    let mut graph = TxGraph::build(alice).unwrap();
-    assert!(has_finding(&mut graph, VulnerabilityType::PeelChain));
+    let gateway = gateway_for(&node);
+    let report = scan_wallet(&gateway, "alice");
+    assert!(has_finding(&report, VulnerabilityType::PeelChain));
 }
 
 // ─── 15. Deterministic Link Detection ──────────────────────────────────────
@@ -875,11 +894,9 @@ fn detect_deterministic_links() {
     alice.send_raw_transaction(&stx).unwrap();
     mine(&node, 1, &da);
 
-    let mut graph = TxGraph::build(alice).unwrap();
-    assert!(has_finding(
-        &mut graph,
-        VulnerabilityType::DeterministicLink
-    ));
+    let gateway = gateway_for(&node);
+    let report = scan_wallet(&gateway, "alice");
+    assert!(has_finding(&report, VulnerabilityType::DeterministicLink));
 }
 
 // ─── 16. Unnecessary Input Detection ───────────────────────────────────────
@@ -947,8 +964,9 @@ fn detect_unnecessary_input() {
     alice.send_raw_transaction(&stx).unwrap();
     mine(&node, 1, &da);
 
-    let mut graph = TxGraph::build(alice).unwrap();
-    assert!(has_finding(&mut graph, VulnerabilityType::UnnecessaryInput));
+    let gateway = gateway_for(&node);
+    let report = scan_wallet(&gateway, "alice");
+    assert!(has_finding(&report, VulnerabilityType::UnnecessaryInput));
 }
 
 // ─── 17. Toxic Change Detection ────────────────────────────────────────────
@@ -1042,6 +1060,7 @@ fn detect_toxic_change() {
     alice.send_raw_transaction(&stx2).unwrap();
     mine(&node, 1, &da);
 
-    let mut graph = TxGraph::build(alice).unwrap();
-    assert!(has_finding(&mut graph, VulnerabilityType::ToxicChange));
+    let gateway = gateway_for(&node);
+    let report = scan_wallet(&gateway, "alice");
+    assert!(has_finding(&report, VulnerabilityType::ToxicChange));
 }

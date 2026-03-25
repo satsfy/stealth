@@ -17,14 +17,14 @@ std = ["bitcoin/std"]
 
 [dependencies]
 bitcoin = { workspace = true }
-corepc-client = { workspace = true }
-corepc-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+stealth-domain = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
 corepc-node = { workspace = true }
+stealth-bitcoincore = { path = "../bitcoincore" }
 
 [lints.rust]
 missing_debug_implementations = "deny"
