@@ -35,10 +35,14 @@
 //! | 16 | Unnecessary input (excess CIOH exposure) | MEDIUM |
 //! | 17 | Toxic change consolidation | HIGH |
 
+pub mod config;
+mod descriptor;
 mod detect;
 mod graph;
 pub mod scanner;
 mod types;
 
+pub use config::DetectorThresholds;
+pub use descriptor::normalize_descriptors;
 pub use graph::TxGraph;
 pub use types::*;

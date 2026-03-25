@@ -24,7 +24,7 @@ fn mine(node: &Node, n: usize, addr: &Address) {
 }
 
 fn has_finding(graph: &mut TxGraph, vtype: VulnerabilityType) -> bool {
-    let report = graph.detect_all(None, None);
+    let report = graph.detect_all(None, None, None);
     report
         .findings
         .iter()
@@ -37,7 +37,7 @@ fn has_finding_with(
     known_risky: Option<&HashSet<String>>,
     known_exchange: Option<&HashSet<String>>,
 ) -> bool {
-    let report = graph.detect_all(known_risky, known_exchange);
+    let report = graph.detect_all(known_risky, known_exchange, None);
     report
         .findings
         .iter()
@@ -664,7 +664,7 @@ fn detect_behavioral_fingerprint() {
     }
 
     let mut graph = TxGraph::build(alice).unwrap();
-    let report = graph.detect_all(None, None);
+    let report = graph.detect_all(None, None, None);
     assert!(report
         .findings
         .iter()
@@ -685,7 +685,7 @@ fn full_report_generates() {
     mine(&node, 1, &da);
 
     let mut graph = TxGraph::build(alice).unwrap();
-    let report = graph.detect_all(None, None);
+    let report = graph.detect_all(None, None, None);
 
     assert_eq!(
         report.summary.findings + report.summary.warnings,

@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::json;
 
+use crate::config::DetectorThresholds;
 use crate::graph::TxGraph;
 use crate::types::*;
 
@@ -11,31 +12,37 @@ impl TxGraph {
     /// Optionally pass sets of known-risky and known-exchange transaction IDs
     /// to enable taint analysis (detector 11) and exchange-origin detection
     /// (detector 10).
+    ///
+    /// When `thresholds` is `None` the built-in defaults are used.
     pub fn detect_all(
         &mut self,
         known_risky_txids: Option<&HashSet<String>>,
         known_exchange_txids: Option<&HashSet<String>>,
+        thresholds: Option<&DetectorThresholds>,
     ) -> Report {
+        let defaults = DetectorThresholds::default();
+        let t = thresholds.unwrap_or(&defaults);
+
         let mut findings = Vec::new();
         let mut warnings = Vec::new();
 
         self.detect_address_reuse(&mut findings);
         self.detect_cioh(&mut findings);
-        self.detect_dust(&mut findings);
-        self.detect_dust_spending(&mut findings);
+        self.detect_dust(&mut findings, t);
+        self.detect_dust_spending(&mut findings, t);
         self.detect_change_detection(&mut findings);
-        self.detect_consolidation_origin(&mut findings);
+        self.detect_consolidation_origin(&mut findings, t);
         self.detect_script_type_mixing(&mut findings);
         self.detect_cluster_merge(&mut findings);
-        self.detect_lookback_depth(&mut findings, &mut warnings);
-        self.detect_exchange_origin(&mut findings, known_exchange_txids);
+        self.detect_lookback_depth(&mut findings, &mut warnings, t);
+        self.detect_exchange_origin(&mut findings, known_exchange_txids, t);
         self.detect_tainted_utxos(&mut findings, &mut warnings, known_risky_txids);
         self.detect_behavioral_fingerprint(&mut findings);
-        self.detect_dust_attack(&mut findings);
+        self.detect_dust_attack(&mut findings, t);
         self.detect_peel_chain(&mut findings);
         self.detect_deterministic_links(&mut findings, &mut warnings);
         self.detect_unnecessary_input(&mut findings);
-        self.detect_toxic_change(&mut findings);
+        self.detect_toxic_change(&mut findings, t);
 
         let stats = Stats {
             transactions_analyzed: self.our_txids.len(),
@@ -163,9 +170,9 @@ impl TxGraph {
 
     // ── 3. Dust UTXO Detection ─────────────────────────────────────────────
 
-    fn detect_dust(&mut self, findings: &mut Vec<Finding>) {
-        const DUST_SATS: u64 = 1000;
-        const STRICT_DUST: u64 = 546;
+    fn detect_dust(&mut self, findings: &mut Vec<Finding>, t: &DetectorThresholds) {
+        let dust_sats = t.dust_sats;
+        let strict_dust = t.strict_dust_sats;
 
         // Current UTXOs
         let utxos = self.utxos.clone();
@@ -174,13 +181,13 @@ impl TxGraph {
                 continue;
             }
             let sats = (utxo.amount * 1e8).round() as u64;
-            if sats <= DUST_SATS {
-                let label = if sats <= STRICT_DUST {
+            if sats <= dust_sats {
+                let label = if sats <= strict_dust {
                     "STRICT_DUST"
                 } else {
                     "dust-class"
                 };
-                let severity = if sats <= STRICT_DUST {
+                let severity = if sats <= strict_dust {
                     Severity::High
                 } else {
                     Severity::Medium
@@ -221,7 +228,7 @@ impl TxGraph {
             let outputs = self.get_output_addresses(txid);
             for out in &outputs {
                 let sats = (out.value * 1e8).round() as u64;
-                if sats <= DUST_SATS && self.is_ours(&out.address) {
+                if sats <= dust_sats && self.is_ours(&out.address) {
                     let key = (txid.clone(), out.address.clone());
                     if !current_keys.contains(&key) && seen.insert(key) {
                         findings.push(Finding {
@@ -251,8 +258,9 @@ impl TxGraph {
 
     // ── 4. Dust Spent with Normal Inputs ───────────────────────────────────
 
-    fn detect_dust_spending(&mut self, findings: &mut Vec<Finding>) {
-        const DUST_SATS: u64 = 1000;
+    fn detect_dust_spending(&mut self, findings: &mut Vec<Finding>, t: &DetectorThresholds) {
+        let dust_sats = t.dust_sats;
+        let normal_min = t.normal_input_min_sats;
 
         let txids: Vec<String> = self.our_txids.iter().cloned().collect();
         for txid in &txids {
@@ -268,9 +276,9 @@ impl TxGraph {
                     continue;
                 }
                 let sats = (ia.value * 1e8).round() as u64;
-                if sats <= DUST_SATS {
+                if sats <= dust_sats {
                     dust_inputs.push(ia);
-                } else if sats > 10_000 {
+                } else if sats > normal_min {
                     normal_inputs.push(ia);
                 }
             }
@@ -399,8 +407,9 @@ impl TxGraph {
 
     // ── 6. Consolidation Origin ────────────────────────────────────────────
 
-    fn detect_consolidation_origin(&mut self, findings: &mut Vec<Finding>) {
-        const CONSOLIDATION_THRESHOLD: usize = 3;
+    fn detect_consolidation_origin(&mut self, findings: &mut Vec<Finding>, t: &DetectorThresholds) {
+        let consolidation_threshold = t.consolidation_min_inputs;
+        let max_outputs = t.consolidation_max_outputs;
 
         let utxos = self.utxos.clone();
         for utxo in &utxos {
@@ -420,7 +429,7 @@ impl TxGraph {
                 .and_then(|v| v.as_array())
                 .map_or(0, |a| a.len());
 
-            if n_in >= CONSOLIDATION_THRESHOLD && n_out <= 2 {
+            if n_in >= consolidation_threshold && n_out <= max_outputs {
                 let parent_inputs = self.get_input_addresses(&utxo.txid);
                 let our_parent_in = parent_inputs
                     .iter()
@@ -581,7 +590,7 @@ impl TxGraph {
 
     // ── 9. Lookback Depth / UTXO Age ───────────────────────────────────────
 
-    fn detect_lookback_depth(&mut self, findings: &mut Vec<Finding>, warnings: &mut Vec<Finding>) {
+    fn detect_lookback_depth(&mut self, findings: &mut Vec<Finding>, warnings: &mut Vec<Finding>, t: &DetectorThresholds) {
         let our_utxos: Vec<_> = self
             .utxos
             .iter()
@@ -630,19 +639,19 @@ impl TxGraph {
             ),
         });
 
-        const OLD_THRESHOLD: i64 = 100;
-        let old_count = aged.iter().filter(|(_, c)| *c >= OLD_THRESHOLD).count();
+        let old_threshold = t.dormant_utxo_blocks;
+        let old_count = aged.iter().filter(|(_, c)| *c >= old_threshold).count();
         if old_count > 0 {
             warnings.push(Finding {
                 vulnerability_type: VulnerabilityType::DormantUtxos,
                 severity: Severity::Low,
                 description: format!(
                     "{} UTXO(s) have ≥{} confirmations (dormant/hoarded coins pattern)",
-                    old_count, OLD_THRESHOLD
+                    old_count, old_threshold
                 ),
                 details: Some(json!({
                     "count": old_count,
-                    "threshold_blocks": OLD_THRESHOLD,
+                    "threshold_blocks": old_threshold,
                 })),
                 correction: None,
             });
@@ -655,8 +664,9 @@ impl TxGraph {
         &mut self,
         findings: &mut Vec<Finding>,
         known_exchange_txids: Option<&HashSet<String>>,
+        t: &DetectorThresholds,
     ) {
-        const BATCH_THRESHOLD: usize = 5;
+        let batch_threshold = t.exchange_batch_min_outputs;
 
         let txids: Vec<String> = self.our_txids.iter().cloned().collect();
         for txid in &txids {
@@ -668,7 +678,7 @@ impl TxGraph {
                 .get("vout")
                 .and_then(|v| v.as_array())
                 .map_or(0, |a| a.len());
-            if n_out < BATCH_THRESHOLD {
+            if n_out < batch_threshold {
                 continue;
             }
 
@@ -697,7 +707,7 @@ impl TxGraph {
                     .iter()
                     .filter_map(|v| v.pointer("/scriptPubKey/address").and_then(|a| a.as_str()))
                     .collect();
-                if unique_addrs.len() >= BATCH_THRESHOLD {
+                if unique_addrs.len() >= batch_threshold {
                     signals.push(format!("{} unique recipient addresses", unique_addrs.len()));
                 }
             }
@@ -1019,10 +1029,10 @@ impl TxGraph {
     // attack transaction. A dust attack parent typically has ≥10 outputs,
     // ≥5 of which are ≤ 546 sats, distributed to many distinct addresses.
 
-    fn detect_dust_attack(&mut self, findings: &mut Vec<Finding>) {
-        const MIN_OUTPUTS: usize = 10;
-        const DUST_THRESHOLD: u64 = 546;
-        const MIN_DUST_OUTPUTS: usize = 5;
+    fn detect_dust_attack(&mut self, findings: &mut Vec<Finding>, t: &DetectorThresholds) {
+        let min_outputs = t.dust_attack_min_outputs;
+        let dust_threshold = t.strict_dust_sats;
+        let min_dust_outputs = t.dust_attack_min_dust_outputs;
 
         // Check receiving transactions only (we didn't create them).
         let txids: Vec<String> = self.our_txids.iter().cloned().collect();
@@ -1034,15 +1044,15 @@ impl TxGraph {
             }
 
             let outputs = self.get_output_addresses(txid);
-            if outputs.len() < MIN_OUTPUTS {
+            if outputs.len() < min_outputs {
                 continue;
             }
 
             let dust_outputs: Vec<_> = outputs
                 .iter()
-                .filter(|o| (o.value * 1e8).round() as u64 <= DUST_THRESHOLD)
+                .filter(|o| (o.value * 1e8).round() as u64 <= dust_threshold)
                 .collect();
-            if dust_outputs.len() < MIN_DUST_OUTPUTS {
+            if dust_outputs.len() < min_dust_outputs {
                 continue;
             }
 
@@ -1074,7 +1084,7 @@ impl TxGraph {
                     txid,
                     outputs.len(),
                     dust_outputs.len(),
-                    DUST_THRESHOLD,
+                    dust_threshold,
                     unique_addrs.len()
                 ),
                 details: Some(json!({
@@ -1456,9 +1466,9 @@ impl TxGraph {
     // reveals the connection between the payment transaction and the
     // user's larger holdings.
 
-    fn detect_toxic_change(&mut self, findings: &mut Vec<Finding>) {
-        const TOXIC_UPPER: u64 = 10_000;
-        const DUST_LOWER: u64 = 546;
+    fn detect_toxic_change(&mut self, findings: &mut Vec<Finding>, t: &DetectorThresholds) {
+        let toxic_upper = t.toxic_change_upper_sats;
+        let dust_lower = t.strict_dust_sats;
 
         let txids: Vec<String> = self.our_txids.iter().cloned().collect();
         for txid in &txids {
@@ -1478,7 +1488,7 @@ impl TxGraph {
                     continue;
                 }
                 let sats = (out.value * 1e8).round() as u64;
-                if !(DUST_LOWER..=TOXIC_UPPER).contains(&sats) {
+                if !(dust_lower..=toxic_upper).contains(&sats) {
                     continue;
                 }
 
@@ -1495,7 +1505,7 @@ impl TxGraph {
                 }
                 let has_larger = child_inputs.iter().any(|ci| {
                     let ci_sats = (ci.value * 1e8).round() as u64;
-                    ci_sats > TOXIC_UPPER && self.is_ours(&ci.address)
+                    ci_sats > toxic_upper && self.is_ours(&ci.address)
                 });
                 if !has_larger {
                     continue;

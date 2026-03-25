@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use corepc_client::client_sync::{v29::Client, v29::ImportDescriptorsRequest, Auth};
 use serde::{Deserialize, Serialize};
 
+use crate::config::DetectorThresholds;
+use crate::descriptor::normalize_descriptors;
 use crate::graph::{script_type_from_address, TxGraph, UtxoEntry};
 use crate::types::*;
 
@@ -89,15 +91,34 @@ impl RpcConfig {
 
 /// Run a full privacy scan against a bitcoind node.
 pub fn scan(config: &RpcConfig, target: ScanTarget) -> Result<Report, ScanError> {
+    scan_with_thresholds(config, target, None)
+}
+
+/// Run a full privacy scan with custom detector thresholds.
+pub fn scan_with_thresholds(
+    config: &RpcConfig,
+    target: ScanTarget,
+    thresholds: Option<&DetectorThresholds>,
+) -> Result<Report, ScanError> {
     match target {
-        ScanTarget::Descriptor(d) => scan_descriptors(config, vec![d]),
-        ScanTarget::Descriptors(ds) => scan_descriptors(config, ds),
-        ScanTarget::Utxos(utxos) => scan_utxos(config, utxos),
+        ScanTarget::Descriptor(d) => scan_descriptors(config, vec![d], thresholds),
+        ScanTarget::Descriptors(ds) => scan_descriptors(config, ds, thresholds),
+        ScanTarget::Utxos(utxos) => scan_utxos(config, utxos, thresholds),
     }
 }
 
-fn scan_descriptors(config: &RpcConfig, descriptors: Vec<String>) -> Result<Report, ScanError> {
+fn scan_descriptors(
+    config: &RpcConfig,
+    descriptors: Vec<String>,
+    thresholds: Option<&DetectorThresholds>,
+) -> Result<Report, ScanError> {
     let base_client = config.connect()?;
+
+    // Normalize descriptors: strip checksums, infer receive/change pairs.
+    let normalized = normalize_descriptors(&descriptors);
+    if normalized.is_empty() {
+        return Err(ScanError::Execution("no valid descriptors after normalization".into()));
+    }
 
     let wallet_name = format!(
         "stealth_scan_{}",
@@ -123,9 +144,9 @@ fn scan_descriptors(config: &RpcConfig, descriptors: Vec<String>) -> Result<Repo
     let wallet_client = config.connect_wallet(&wallet_name)?;
 
     // Import descriptors with timestamp=0 for full blockchain rescan.
-    let requests: Vec<ImportDescriptorsRequest> = descriptors
+    let requests: Vec<ImportDescriptorsRequest> = normalized
         .iter()
-        .map(|d| ImportDescriptorsRequest::new(d.as_str(), serde_json::json!(0)))
+        .map(|(d, _internal)| ImportDescriptorsRequest::new(d.as_str(), serde_json::json!(0)))
         .collect();
 
     let import_result = wallet_client.import_descriptors(&requests);
@@ -136,13 +157,17 @@ fn scan_descriptors(config: &RpcConfig, descriptors: Vec<String>) -> Result<Repo
 
     let result = TxGraph::build(wallet_client)
         .map_err(|e| ScanError::Execution(e.to_string()))
-        .map(|mut graph| graph.detect_all(None, None));
+        .map(|mut graph| graph.detect_all(None, None, thresholds));
 
     let _ = base_client.unload_wallet(&wallet_name);
     result
 }
 
-fn scan_utxos(config: &RpcConfig, utxos: Vec<UtxoInput>) -> Result<Report, ScanError> {
+fn scan_utxos(
+    config: &RpcConfig,
+    utxos: Vec<UtxoInput>,
+    thresholds: Option<&DetectorThresholds>,
+) -> Result<Report, ScanError> {
     let client = config.connect()?;
 
     let mut our_addrs = HashSet::new();
@@ -210,7 +235,7 @@ fn scan_utxos(config: &RpcConfig, utxos: Vec<UtxoInput>) -> Result<Report, ScanE
         output_cache: HashMap::new(),
     };
 
-    Ok(graph.detect_all(None, None))
+    Ok(graph.detect_all(None, None, thresholds))
 }
 
 fn resolve_utxo_address(client: &Client, txid_str: &str, vout: u32) -> Result<String, ScanError> {
