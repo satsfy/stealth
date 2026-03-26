@@ -31,6 +31,7 @@ Stealth ships a Rust workspace with:
 
 - `stealth-engine` (analysis engine)
 - `stealth-model` (domain model types and interfaces)
+- `stealth-bitcoincore` (Bitcoin Core RPC gateway adapter)
 
 ## Project Direction
 
@@ -173,6 +174,7 @@ stealth/
 │   └── tests/
 │       └── integration.rs  # Regtest integration tests
 ├── model/                  # stealth-model (domain model types and interfaces)
+├── bitcoincore/            # Bitcoin Core gateway implementation crate
 ├── frontend/               # React + Vite UI
 └── target/                 # Cargo build outputs
 ```
